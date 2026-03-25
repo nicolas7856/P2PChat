@@ -34,15 +34,16 @@
 
             <div id="connection-loading" class="hidden">
                 <div class="loader"></div>
-                <p class="instruction-text">Tentativo di connessione P2P in corso...</p>
+                <p class="instruction-text">Sincronizzazione P2P in corso... Attendere.</p>
+                <button id="abort-connection" class="btn-danger" style="margin-top:20px;">Annulla e Riprova</button>
             </div>
 
             <div id="qr-container" class="hidden">
                 <p id="qr-instruction" class="instruction-text"></p>
                 <canvas id="qr-canvas"></canvas>
                 <div id="host-controls" class="hidden">
-                    <p class="instruction-text">L'amico ha scansionato? Ora tocca a te:</p>
-                    <button id="host-scan-step" class="btn-primary">Scansiona Risposta Amico</button>
+                    <p class="instruction-text">L'amico ha scansionato? Ora scansiona tu il suo codice:</p>
+                    <button id="host-scan-step">Scansiona Risposta Amico</button>
                 </div>
             </div>
 

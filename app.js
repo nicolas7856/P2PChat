@@ -1,7 +1,6 @@
 const cfg = { rtc: { iceServers: [] }, store: 'airchat_msg', user: 'airchat_name' };
 let pc, dataChannel, localName = '', peerName = '', isHost = false, stream = null;
 
-// INIT
 window.addEventListener('DOMContentLoaded', () => {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
     const saved = localStorage.getItem(cfg.user);
@@ -17,6 +16,7 @@ function setupEvents() {
     document.getElementById('start-hosting').onclick = startHost;
     document.getElementById('start-scanning').onclick = startScan;
     document.getElementById('stop-scanning').onclick = stopScan;
+    document.getElementById('abort-connection').onclick = () => location.reload();
     document.getElementById('host-scan-step').onclick = () => {
         document.getElementById('qr-container').classList.add('hidden');
         startScan();
@@ -36,28 +36,18 @@ function initConnect() {
 
 // WEBRTC CORE
 function createPC() {
-    if (pc) {
-        pc.close();
-        pc = null;
-    }
-    
+    if (pc) pc.close();
     pc = new RTCPeerConnection(cfg.rtc);
     
     pc.onicecandidate = e => {
-        if (!e.candidate) {
-            console.log("ICE Gathering completo");
-            genQR(JSON.stringify(pc.localDescription));
-        }
+        if (!e.candidate) genQR(JSON.stringify(pc.localDescription));
     };
 
-    // Monitoriamo sia connectionState che iceConnectionState per massima compatibilità
     const checkState = () => {
-        const connected = pc.connectionState === 'connected' || pc.iceConnectionState === 'connected';
-        if (connected) {
-            document.getElementById('connection-status').textContent = 'CONNESSO';
-            document.getElementById('connection-status').className = 'status-connected';
-            document.getElementById('connection-loading').classList.add('hidden');
-            setTimeout(() => showScreen('chat'), 500);
+        const isConnected = pc.connectionState === 'connected' || pc.iceConnectionState === 'connected';
+        if (isConnected) {
+            updateUIStatus(true);
+            showScreen('chat');
         }
     };
 
@@ -65,18 +55,22 @@ function createPC() {
     pc.oniceconnectionstatechange = checkState;
 }
 
+function updateUIStatus(connected) {
+    const s = document.getElementById('connection-status');
+    s.textContent = connected ? 'CONNESSO' : 'Disconnesso';
+    s.className = connected ? 'status-connected' : 'status-disconnected';
+}
+
 function setupChannel(ch) {
     dataChannel = ch;
     ch.onopen = () => {
         document.getElementById('chat-status-dot').className = 'status-dot-connected';
+        showScreen('chat'); // Forza entrata in chat
         ch.send(JSON.stringify({type:'name', name: localName}));
     };
     ch.onmessage = e => {
         const d = JSON.parse(e.data);
-        if(d.type === 'name') { 
-            peerName = d.name; 
-            document.getElementById('peer-name-display').textContent = peerName; 
-        }
+        if(d.type === 'name') { peerName = d.name; document.getElementById('peer-name-display').textContent = peerName; }
         else if(d.type === 'text') { renderMsg(d, 'received'); saveMsg(d); }
     };
 }
@@ -90,11 +84,8 @@ async function startHost() {
     document.getElementById('qr-container').classList.remove('hidden');
     document.getElementById('qr-instruction').textContent = "1. Fai scansionare all'amico";
     document.getElementById('host-controls').classList.remove('hidden');
-    
-    try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-    } catch(e) { alert("Errore creazione offerta"); }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 }
 
 async function startScan() {
@@ -102,33 +93,25 @@ async function startScan() {
     const v = document.getElementById('scanner-video');
     try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        v.srcObject = stream;
-        v.play();
+        v.srcObject = stream; v.play();
         requestAnimationFrame(tick);
-    } catch (e) { alert("Errore camera. Assicurati di essere in HTTPS."); stopScan(); }
+    } catch (e) { alert("Errore camera"); stopScan(); }
 }
 
 function stopScan() {
     document.getElementById('scanner-container').classList.add('hidden');
-    if(stream) {
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-    }
+    if(stream) stream.getTracks().forEach(t => t.stop());
 }
 
 function tick() {
     const v = document.getElementById('scanner-video');
-    if (v && v.readyState === v.HAVE_ENOUGH_DATA) {
+    if (v.readyState === v.HAVE_ENOUGH_DATA) {
         const canvas = document.getElementById('scanner-canvas');
         canvas.height = v.videoHeight; canvas.width = v.videoWidth;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
         const code = jsQR(ctx.getImageData(0,0,canvas.width,canvas.height).data, canvas.width, canvas.height);
-        if (code) { 
-            stopScan(); 
-            handleQR(code.data); 
-            return; 
-        }
+        if (code) { stopScan(); handleQR(code.data); return; }
     }
     if(stream) requestAnimationFrame(tick);
 }
@@ -136,12 +119,12 @@ function tick() {
 async function handleQR(data) {
     try {
         const sdp = LZString.decompressFromEncodedURIComponent(data);
-        if(!sdp) throw new Error("Decompressione fallita");
-        
+        if(!sdp) throw new Error("SDP vuoto");
         const obj = JSON.parse(sdp);
         
-        // Se abbiamo scansionato, mostriamo il caricamento per evitare lo schermo bianco
+        // Nascondi tutto e mostra loader
         document.getElementById('main-controls').classList.add('hidden');
+        document.getElementById('qr-container').classList.add('hidden');
         document.getElementById('connection-loading').classList.remove('hidden');
 
         if(obj.type === 'offer') {
@@ -150,21 +133,18 @@ async function handleQR(data) {
             await pc.setRemoteDescription(new RTCSessionDescription(obj));
             const ans = await pc.createAnswer();
             await pc.setLocalDescription(ans);
-            
-            // Per il client, dopo aver generato la risposta, dobbiamo mostrare il QR
+            // Il client deve mostrare il QR di risposta
             document.getElementById('connection-loading').classList.add('hidden');
             document.getElementById('qr-container').classList.remove('hidden');
             document.getElementById('qr-instruction').textContent = "3. Fai scansionare la risposta all'host";
-            document.getElementById('host-controls').classList.add('hidden'); // Il client non ha controlli host
+            document.getElementById('host-controls').classList.add('hidden');
         } else if(obj.type === 'answer') {
             await pc.setRemoteDescription(new RTCSessionDescription(obj));
-            // L'host rimane in attesa (mostrando il loader) finché onconnectionstatechange non scatta
+            // L'host rimane sul loader finché onopen o onconnectionstatechange scatta
         }
     } catch (e) { 
-        alert("QR non valido o errore di connessione"); 
-        console.error(e);
-        document.getElementById('main-controls').classList.remove('hidden');
-        document.getElementById('connection-loading').classList.add('hidden');
+        alert("QR fallito"); 
+        location.reload();
     }
 }
 
