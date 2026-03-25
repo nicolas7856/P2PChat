@@ -4,53 +4,110 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>P2P AirChat Pro</title>
-    <link rel="stylesheet" href="styles.css">
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#2c3e50">
+    
     <script src="lz-string.min.js"></script>
     <script src="qrious.min.js"></script>
     <script src="jsQR.js"></script>
+
+    <style>
+        :root { --primary: #2c3e50; --accent: #27ae60; --danger: #e74c3c; --bg: #ecf0f1; --text: #34495e; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        body { background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+        
+        .screen { display: none; height: 100vh; width: 100vw; flex-direction: column; position: absolute; top: 0; left: 0; }
+        .screen.active { display: flex; }
+        .hidden { display: none !important; }
+
+        header { background: var(--primary); color: white; padding: 15px; text-align: center; font-weight: bold; z-index: 10; }
+        
+        .content { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 20px; overflow-y: auto; }
+        .centered-content { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 20px; text-align: center; }
+
+        input { padding: 12px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 15px; width: 85%; max-width: 300px; font-size: 16px; }
+        button { padding: 12px 24px; border: none; border-radius: 8px; background: var(--accent); color: white; font-weight: bold; cursor: pointer; transition: transform 0.1s; }
+        button:active { transform: scale(0.98); }
+        .btn-danger { background: var(--danger); }
+
+        #status-bar { margin: 10px 0; font-size: 14px; font-weight: bold; }
+        .status-disconnected { color: var(--danger); }
+        .status-connected { color: var(--accent); }
+
+        .action-buttons { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 300px; }
+
+        /* QR & Scanner */
+        #qr-container { text-align: center; margin-top: 20px; width: 100%; }
+        #qr-canvas { background: white; padding: 10px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); max-width: 250px; }
+        .instruction-text { margin: 15px 0; font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--primary); }
+
+        #scanner-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 1000; display: flex; flex-direction: column; }
+        #scanner-video { width: 100%; height: 100%; object-fit: cover; }
+        .scanner-controls { position: absolute; bottom: 30px; width: 100%; text-align: center; }
+
+        /* Loader */
+        .loader-box { display: flex; flex-direction: column; align-items: center; margin-top: 40px; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 15px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Chat UI */
+        #chat-messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; background: #f9f9f9; }
+        .message { padding: 10px 14px; border-radius: 15px; max-width: 80%; position: relative; font-size: 15px; line-height: 1.4; }
+        .message.sent { align-self: flex-end; background: #dcf8c6; border-bottom-right-radius: 2px; }
+        .message.received { align-self: flex-start; background: white; border-bottom-left-radius: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .msg-meta { font-size: 10px; color: #888; display: block; margin-top: 4px; text-align: right; }
+        
+        footer { background: white; padding: 10px; display: flex; gap: 8px; border-top: 1px solid #ddd; }
+        footer input { flex: 1; margin-bottom: 0; width: auto; }
+        
+        #chat-status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-left: 8px; }
+        .dot-online { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+        .dot-offline { background: var(--danger); }
+    </style>
 </head>
 <body>
 
     <div id="screen-login" class="screen active">
         <div class="centered-content">
-            <h1>P2P AirChat</h1>
-            <p>Protocollo di comunicazione ad-hoc</p>
-            <input type="text" id="username-input" placeholder="Tuo Nome" maxlength="15">
-            <button id="login-button">Inizializza Nodo</button>
+            <h1>AirChat P2P</h1>
+            <p style="margin-bottom: 20px;">Comunicazione sicura senza rete</p>
+            <input type="text" id="username-input" placeholder="Tuo Nome" maxlength="12">
+            <button id="login-button">Accedi al Nodo</button>
         </div>
     </div>
 
     <div id="screen-connect" class="screen">
         <header>Nodo: <span id="my-name-display"></span></header>
         <div class="content">
-            <div id="status-bar">Stato: <span id="connection-status" class="status-disconnected">Disconnesso</span></div>
+            <div id="status-bar">
+                Stato: <span id="connection-status" class="status-disconnected">Disconnesso</span>
+            </div>
             
-            <div class="action-buttons" id="main-controls">
-                <button id="start-hosting">1. Inizia Chat (Mostra QR)</button>
-                <button id="start-scanning">2. Scansiona QR Amico</button>
+            <div id="main-controls" class="action-buttons">
+                <button id="start-hosting">1. Genera Invito (QR)</button>
+                <button id="start-scanning">2. Scansiona Amico</button>
             </div>
 
-            <div id="connection-loading" class="hidden">
+            <div id="connection-loading" class="loader-box hidden">
                 <div class="loader"></div>
-                <p class="instruction-text">Sincronizzazione P2P in corso... Attendere.</p>
-                <button id="abort-connection" class="btn-danger" style="margin-top:20px;">Annulla e Riprova</button>
+                <p class="instruction-text">Sincronizzazione WebRTC...</p>
+                <button onclick="location.reload()" class="btn-danger">Annulla</button>
             </div>
 
             <div id="qr-container" class="hidden">
                 <p id="qr-instruction" class="instruction-text"></p>
                 <canvas id="qr-canvas"></canvas>
-                <div id="host-controls" class="hidden">
-                    <p class="instruction-text">L'amico ha scansionato? Ora scansiona tu il suo codice:</p>
-                    <button id="host-scan-step">Scansiona Risposta Amico</button>
+                <div id="host-next-controls" class="hidden" style="margin-top: 15px;">
+                    <p class="instruction-text">L'amico ha scansionato?<br>Ora scansiona la sua risposta:</p>
+                    <button id="host-scan-step">Apri Fotocamera</button>
                 </div>
             </div>
 
             <div id="scanner-container" class="hidden">
-                <div class="scanner-overlay">
-                    <video id="scanner-video" playsinline></video>
-                    <button id="stop-scanning" class="btn-danger">Annulla</button>
+                <video id="scanner-video" playsinline></video>
+                <div class="scanner-controls">
+                    <button id="stop-scanning" class="btn-danger">Chiudi Scanner</button>
                 </div>
                 <canvas id="scanner-canvas" class="hidden"></canvas>
             </div>
@@ -59,12 +116,12 @@
 
     <div id="screen-chat" class="screen">
         <header>
-            Peer: <span id="peer-name-display">In attesa...</span>
-            <div id="chat-status-dot" class="status-dot-disconnected"></div>
+            Chat con: <span id="peer-name-display">...</span>
+            <div id="chat-status-dot" class="dot-offline"></div>
         </header>
         <div id="chat-messages"></div>
         <footer>
-            <input type="text" id="message-input" placeholder="Messaggio...">
+            <input type="text" id="message-input" placeholder="Scrivi...">
             <button id="send-button">Invia</button>
         </footer>
     </div>

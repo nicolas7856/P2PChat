@@ -1,11 +1,17 @@
-const CACHE = 'airchat-v2';
+const CACHE_NAME = 'airchat-v3';
 const ASSETS = [
-  './', './index.html', './styles.css', './app.js', './manifest.json',
+  './', './index.html', './app.js', './manifest.json',
   './lz-string.min.js', './qrious.min.js', './jsQR.js', './icon-192.png', './icon-512.png'
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys => Promise.all(
+    keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
+  )));
 });
 
 self.addEventListener('fetch', e => {
