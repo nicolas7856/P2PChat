@@ -3,11 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>P2P AirChat</title>
+    <title>P2P AirChat Pro</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#2c3e50">
-    
     <script src="lz-string.min.js"></script>
     <script src="qrious.min.js"></script>
     <script src="jsQR.js"></script>
@@ -17,49 +16,49 @@
     <div id="screen-login" class="screen active">
         <div class="centered-content">
             <h1>P2P AirChat</h1>
-            <p>Inserisci il tuo nome per iniziare</p>
+            <p>Protocollo di comunicazione ad-hoc</p>
             <input type="text" id="username-input" placeholder="Tuo Nome" maxlength="15">
-            <button id="login-button">Entra</button>
+            <button id="login-button">Inizializza Nodo</button>
         </div>
     </div>
 
     <div id="screen-connect" class="screen">
-        <header>
-            <span id="my-name-display"></span>
-        </header>
+        <header>Nodo: <span id="my-name-display"></span></header>
         <div class="content">
-            <div id="status-bar">
-                Stato: <span id="connection-status" class="status-disconnected">Disconnesso</span>
-            </div>
+            <div id="status-bar">Stato: <span id="connection-status" class="status-disconnected">Disconnesso</span></div>
             
-            <div class="action-buttons">
+            <div class="action-buttons" id="main-controls">
                 <button id="start-hosting">1. Inizia Chat (Mostra QR)</button>
                 <button id="start-scanning">2. Scansiona QR Amico</button>
             </div>
 
             <div id="qr-container" class="hidden">
-                <p id="qr-instruction"></p>
+                <p id="qr-instruction" class="instruction-text"></p>
                 <canvas id="qr-canvas"></canvas>
+                <div id="host-controls" class="hidden">
+                    <p class="instruction-text">L'amico ha scansionato? Ora tocca a te:</p>
+                    <button id="host-scan-step" class="btn-primary">Scansiona Risposta Amico</button>
+                </div>
             </div>
 
             <div id="scanner-container" class="hidden">
-                <p>Inquadra il QR dell'amico</p>
-                <video id="scanner-video" playsinline></video>
+                <div class="scanner-overlay">
+                    <video id="scanner-video" playsinline></video>
+                    <button id="stop-scanning" class="btn-danger">Annulla</button>
+                </div>
                 <canvas id="scanner-canvas" class="hidden"></canvas>
-                <button id="stop-scanning" class="btn-danger">Annulla</button>
             </div>
         </div>
     </div>
 
     <div id="screen-chat" class="screen">
         <header>
-            Chat con: <span id="peer-name-display"></span>
+            Peer: <span id="peer-name-display">In attesa...</span>
             <div id="chat-status-dot" class="status-dot-disconnected"></div>
         </header>
-        <div id="chat-messages">
-            </div>
+        <div id="chat-messages"></div>
         <footer>
-            <input type="text" id="message-input" placeholder="Scrivi messaggio...">
+            <input type="text" id="message-input" placeholder="Messaggio...">
             <button id="send-button">Invia</button>
         </footer>
     </div>
