@@ -1,28 +1,57 @@
-const cfg = { 
-    rtc: { iceServers: [] }, 
-    keys: { user: 'p2p_name', contacts: 'p2p_contacts' } 
+/**
+ * P2P AirChat - Core Logic
+ * Implementazione WebRTC Serverless con Foto/Video e Persistenza
+ */
+
+const CFG = {
+    rtc: { iceServers: [] }, // Connessione diretta in LAN/Tethering
+    keys: {
+        user: 'airchat_local_name',
+        contacts: 'airchat_db_contacts'
+    },
+    maxHistory: 100,
+    maxFileSize: 2 * 1024 * 1024 // Limite 2MB per stabilità DataChannel
 };
 
-let pc, dataChannel, localName = '', peerName = '', isHost = false, stream = null;
+// Stato Globale
+let pc = null;
+let dataChannel = null;
+let localName = '';
+let currentPeer = '';
+let isHost = false;
+let stream = null;
 
-// INIZIALIZZAZIONE
+// --- 1. INIZIALIZZAZIONE ---
+
 window.addEventListener('DOMContentLoaded', () => {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
-    const saved = localStorage.getItem(cfg.keys.user);
-    if (saved) {
-        localName = saved;
+    // Registrazione Service Worker per funzionamento offline
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('service-worker.js').catch(console.error);
+    }
+
+    const savedName = localStorage.getItem(CFG.keys.user);
+    if (savedName) {
+        localName = savedName;
         document.getElementById('my-name-display').textContent = localName;
         showScreen('connect');
         renderDashboard();
     }
-    setupEvents();
+
+    initUIEvents();
 });
 
-function setupEvents() {
+function initUIEvents() {
+    // Login
     document.getElementById('login-button').onclick = () => {
-        const n = document.getElementById('username-input').value.trim();
-        if(n) { localName = n; localStorage.setItem(cfg.keys.user, n); location.reload(); }
+        const val = document.getElementById('username-input').value.trim();
+        if (val) {
+            localName = val;
+            localStorage.setItem(CFG.keys.user, val);
+            location.reload(); 
+        }
     };
+
+    // Handshake
     document.getElementById('start-hosting').onclick = startHost;
     document.getElementById('start-scanning').onclick = startScan;
     document.getElementById('stop-scanning').onclick = stopScan;
@@ -30,10 +59,12 @@ function setupEvents() {
         document.getElementById('qr-container').classList.add('hidden');
         startScan();
     };
+
+    // Chat Actions
+    document.getElementById('send-button').onclick = sendTextMsg;
+    document.getElementById('message-input').onkeypress = (e) => { if(e.key === 'Enter') sendTextMsg(); };
     document.getElementById('attach-btn').onclick = () => document.getElementById('file-input').click();
-    document.getElementById('file-input').onchange = handleFile;
-    document.getElementById('send-button').onclick = sendMsg;
-    document.getElementById('message-input').onkeypress = e => { if(e.key === 'Enter') sendMsg(); };
+    document.getElementById('file-input').onchange = handleFileUpload;
 }
 
 function showScreen(id) {
@@ -41,125 +72,169 @@ function showScreen(id) {
     document.getElementById('screen-' + id).classList.add('active');
 }
 
-/**
- * DASHBOARD E RUBRICA
- */
+// --- 2. DASHBOARD & PERSISTENZA ---
+
 function renderDashboard() {
     const list = document.getElementById('contacts-list');
-    const contacts = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
+    const contacts = JSON.parse(localStorage.getItem(CFG.keys.contacts) || '{}');
     list.innerHTML = '';
-    Object.keys(contacts).forEach(name => {
-        const last = contacts[name].history.slice(-1)[0];
+
+    const sortedKeys = Object.keys(contacts).sort((a, b) => {
+        const lastA = contacts[a].history.slice(-1)[0]?.ts || '';
+        const lastB = contacts[b].history.slice(-1)[0]?.ts || '';
+        return lastB.localeCompare(lastA);
+    });
+
+    if (sortedKeys.length === 0) {
+        list.innerHTML = '<p style="font-size:14px; color:#888; text-align:center;">Nessuna chat recente.</p>';
+        return;
+    }
+
+    sortedKeys.forEach(name => {
+        const history = contacts[name].history;
+        const lastMsg = history[history.length - 1];
         const card = document.createElement('div');
         card.className = 'contact-card';
         card.innerHTML = `
             <div class="contact-info">
                 <strong>${name}</strong>
-                <small>${last ? (last.type === 'text' ? last.text : '📁 Media') : 'Nessun messaggio'}</small>
+                <small>${lastMsg ? (lastMsg.type === 'media' ? '📁 Allegato' : lastMsg.text) : 'Inizia a scrivere...'}</small>
             </div>
             <span>➔</span>
         `;
-        card.onclick = () => { peerName = name; startHost(); };
+        card.onclick = () => {
+            currentPeer = name;
+            startHost(); // Chi clicca riattiva la connessione come Host
+        };
         list.appendChild(card);
     });
 }
 
-/**
- * WEBRTC CORE
- */
+// --- 3. WEBRTC ENGINE (OTTIMIZZATO PER IOS) ---
+
 function createPC() {
     if (pc) pc.close();
-    pc = new RTCPeerConnection(cfg.rtc);
-    pc.onicecandidate = e => { if (!e.candidate) genQR(JSON.stringify(pc.localDescription)); };
-    pc.onconnectionstatechange = () => {
-        if(pc.connectionState === 'connected') {
-            document.getElementById('connection-loading').classList.add('hidden');
-            showScreen('chat');
-            loadHistory(peerName);
+    
+    pc = new RTCPeerConnection(CFG.rtc);
+
+    // Gestione Candidati ICE: Fondamentale per bypassare mDNS su iOS
+    pc.onicecandidate = e => {
+        if (!e.candidate) {
+            // Gathering terminato: ora il QR conterrà tutti gli IP locali validi
+            console.log("ICE Gathering completo.");
+            genQR(JSON.stringify(pc.localDescription));
         }
     };
+
+    const handleConnectionChange = () => {
+        const connected = pc.iceConnectionState === 'connected' || pc.connectionState === 'connected';
+        if (connected) {
+            document.getElementById('connection-loading').classList.add('hidden');
+            showScreen('chat');
+            loadHistory(currentPeer);
+        }
+    };
+
+    pc.onconnectionstatechange = handleConnectionChange;
+    pc.oniceconnectionstatechange = handleConnectionChange;
 }
 
 function setupChannel(ch) {
     dataChannel = ch;
-    ch.onopen = () => ch.send(JSON.stringify({type:'name_sync', name: localName}));
+    ch.onopen = () => {
+        document.getElementById('chat-status-dot').className = 'dot-online';
+        ch.send(JSON.stringify({ type: 'sync_name', name: localName }));
+    };
     ch.onmessage = e => {
-        const d = JSON.parse(e.data);
-        if(d.type === 'name_sync') { 
-            peerName = d.name; 
-            document.getElementById('peer-name-display').textContent = peerName; 
-        } else if(d.type === 'text' || d.type === 'media') {
-            renderMsg(d, 'received');
-            saveMsg(peerName, d);
-            ch.send(JSON.stringify({type: 'ack', id: d.id})); // Invia doppia spunta
-        } else if(d.type === 'ack') {
-            markAsReceived(d.id);
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'sync_name') {
+            currentPeer = msg.name;
+            document.getElementById('peer-name-display').textContent = currentPeer;
+        } else if (msg.type === 'text' || msg.type === 'media') {
+            receiveMsg(msg);
+            // Invia conferma di ricezione (ACK) per la doppia spunta
+            ch.send(JSON.stringify({ type: 'ack', id: msg.id }));
+        } else if (msg.type === 'ack') {
+            updateTicks(msg.id);
         }
     };
 }
 
-// HANDSHAKE
+// --- 4. FLUSSO HANDSHAKE QR ---
+
 async function startHost() {
     isHost = true;
     createPC();
     setupChannel(pc.createDataChannel("chat"));
+    
     document.getElementById('main-actions').classList.add('hidden');
     document.getElementById('qr-container').classList.remove('hidden');
     document.getElementById('qr-instruction').textContent = "1. Fai scansionare all'amico";
     document.getElementById('host-controls').classList.remove('hidden');
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+
+    try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+    } catch (e) { alert("Errore WebRTC: " + e); }
 }
+
+async function handleQR(data) {
+    try {
+        const sdp = LZString.decompressFromEncodedURIComponent(data);
+        const obj = JSON.parse(sdp);
+
+        document.getElementById('qr-container').classList.add('hidden');
+        document.getElementById('main-actions').classList.add('hidden');
+        document.getElementById('connection-loading').classList.remove('hidden');
+
+        if (obj.type === 'offer') {
+            isHost = false;
+            createPC();
+            pc.ondatachannel = e => setupChannel(e.channel);
+            await pc.setRemoteDescription(new RTCSessionDescription(obj));
+            const ans = await pc.createAnswer();
+            await pc.setLocalDescription(ans);
+            
+            // Il client deve mostrare la sua risposta
+            document.getElementById('connection-loading').classList.add('hidden');
+            document.getElementById('qr-container').classList.remove('hidden');
+            document.getElementById('qr-instruction').textContent = "2. Fai scansionare all'host";
+            document.getElementById('host-controls').classList.add('hidden');
+        } else if (obj.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(obj));
+        }
+    } catch (e) { alert("QR non valido"); location.reload(); }
+}
+
+// --- 5. SCANNER ENGINE ---
 
 async function startScan() {
     document.getElementById('scanner-container').classList.remove('hidden');
-    const v = document.getElementById('scanner-video');
+    const video = document.getElementById('scanner-video');
     try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        v.srcObject = stream; v.play();
-        requestAnimationFrame(tick);
-    } catch (e) { alert("Camera Error"); stopScan(); }
+        video.srcObject = stream;
+        video.play();
+        requestAnimationFrame(tickScanner);
+    } catch (e) { alert("Fotocamera non disponibile."); stopScan(); }
 }
 
 function stopScan() {
     document.getElementById('scanner-container').classList.add('hidden');
-    if(stream) stream.getTracks().forEach(t => t.stop());
+    if (stream) stream.getTracks().forEach(t => t.stop());
 }
 
-function tick() {
-    const v = document.getElementById('scanner-video');
-    if (v.readyState === v.HAVE_ENOUGH_DATA) {
+function tickScanner() {
+    const video = document.getElementById('scanner-video');
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
         const canvas = document.getElementById('scanner-canvas');
-        canvas.height = v.videoHeight; canvas.width = v.videoWidth;
+        canvas.height = video.videoHeight; canvas.width = video.videoWidth;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const code = jsQR(ctx.getImageData(0,0,canvas.width,canvas.height).data, canvas.width, canvas.height);
         if (code) { stopScan(); handleQR(code.data); return; }
     }
-    if(stream) requestAnimationFrame(tick);
-}
-
-async function handleQR(data) {
-    const sdp = LZString.decompressFromEncodedURIComponent(data);
-    if(!sdp) return;
-    const obj = JSON.parse(sdp);
-    document.getElementById('main-actions').classList.add('hidden');
-    document.getElementById('qr-container').classList.add('hidden');
-    document.getElementById('connection-loading').classList.remove('hidden');
-
-    if(obj.type === 'offer') {
-        createPC();
-        pc.ondatachannel = e => setupChannel(e.channel);
-        await pc.setRemoteDescription(new RTCSessionDescription(obj));
-        const ans = await pc.createAnswer();
-        await pc.setLocalDescription(ans);
-        document.getElementById('connection-loading').classList.add('hidden');
-        document.getElementById('qr-container').classList.remove('hidden');
-        document.getElementById('qr-instruction').textContent = "2. Fai scansionare la risposta all'host";
-        document.getElementById('host-controls').classList.add('hidden');
-    } else if(obj.type === 'answer') {
-        await pc.setRemoteDescription(new RTCSessionDescription(obj));
-    }
+    if (stream) requestAnimationFrame(tickScanner);
 }
 
 function genQR(sdp) {
@@ -167,70 +242,106 @@ function genQR(sdp) {
     new QRious({ element: document.getElementById('qr-canvas'), value: comp, size: 250 });
 }
 
-/**
- * MESSAGGI E MEDIA
- */
-function sendMsg() {
-    const i = document.getElementById('message-input');
-    if(!i.value.trim() || !dataChannel) return;
-    const m = {
+// --- 6. CHAT, MEDIA & SPUNTE ---
+
+function sendTextMsg() {
+    const input = document.getElementById('message-input');
+    const text = input.value.trim();
+    if (!text || !dataChannel || dataChannel.readyState !== 'open') return;
+
+    const msg = {
         id: Math.random().toString(36).substr(2, 9),
-        type: 'text', name: localName, text: i.value,
-        ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+        type: 'text',
+        name: localName,
+        text: text,
+        ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
-    dataChannel.send(JSON.stringify(m));
-    renderMsg(m, 'sent'); saveMsg(peerName, m); i.value = '';
+
+    dataChannel.send(JSON.stringify(msg));
+    renderMsg(msg, 'sent');
+    saveMsg(currentPeer, msg);
+    input.value = '';
 }
 
-function handleFile(e) {
+function handleFileUpload(e) {
     const file = e.target.files[0];
-    if(!file || !dataChannel) return;
-    if(file.size > 2 * 1024 * 1024) return alert("File troppo grande (Max 2MB)");
+    if (!file || !dataChannel) return;
+    if (file.size > CFG.maxFileSize) return alert("File troppo grande (Max 2MB)");
 
     const reader = new FileReader();
     reader.onload = (ev) => {
-        const m = {
+        const msg = {
             id: Math.random().toString(36).substr(2, 9),
-            type: 'media', mediaType: file.type.split('/')[0],
-            name: localName, data: ev.target.result,
-            ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+            type: 'media',
+            mediaType: file.type.split('/')[0], // 'image' o 'video'
+            name: localName,
+            data: ev.target.result,
+            ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
-        dataChannel.send(JSON.stringify(m));
-        renderMsg(m, 'sent'); saveMsg(peerName, m);
+        dataChannel.send(JSON.stringify(msg));
+        renderMsg(msg, 'sent');
+        saveMsg(currentPeer, msg);
     };
     reader.readAsDataURL(file);
 }
 
-function renderMsg(m, type) {
-    const c = document.getElementById('chat-messages');
-    const d = document.createElement('div');
-    d.id = `msg-${m.id}`;
-    d.className = `message ${type}`;
-    let html = type === 'received' ? `<strong>${m.name}</strong><br>` : '';
-    if(m.type === 'text') html += m.text;
-    else if(m.mediaType === 'image') html += `<img src="${m.data}" class="msg-media">`;
-    else html += `<video src="${m.data}" controls class="msg-media"></video>`;
-    
-    html += `<span class="msg-meta">${m.ts} <span class="ticks">${type === 'sent' ? '✓' : ''}</span></span>`;
-    d.innerHTML = html;
-    c.appendChild(d); c.scrollTop = c.scrollHeight;
+function receiveMsg(msg) {
+    renderMsg(msg, 'received');
+    saveMsg(currentPeer, msg);
 }
 
-function markAsReceived(id) {
+function renderMsg(m, type) {
+    const chat = document.getElementById('chat-messages');
+    const div = document.createElement('div');
+    div.id = `msg-${m.id}`;
+    div.className = `message ${type}`;
+
+    let body = type === 'received' ? `<strong>${m.name}</strong><br>` : '';
+    if (m.type === 'text') {
+        body += m.text;
+    } else if (m.mediaType === 'image') {
+        body += `<img src="${m.data}" class="msg-media" onclick="window.open(this.src)">`;
+    } else {
+        body += `<video src="${m.data}" controls class="msg-media"></video>`;
+    }
+
+    const ticks = type === 'sent' ? `<span class="ticks">✓</span>` : '';
+    div.innerHTML = `${body}<span class="msg-meta">${m.ts} ${ticks}</span>`;
+    
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function updateTicks(id) {
     const el = document.getElementById(`msg-${id}`);
-    if(el) { const t = el.querySelector('.ticks'); t.textContent = '✓✓'; t.classList.add('ack'); }
+    if (el) {
+        const ticks = el.querySelector('.ticks');
+        if (ticks) {
+            ticks.textContent = '✓✓';
+            ticks.classList.add('ack');
+        }
+    }
 }
 
 function saveMsg(peer, m) {
-    let db = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
-    if(!db[peer]) db[peer] = { history: [] };
+    if (!peer) return;
+    let db = JSON.parse(localStorage.getItem(CFG.keys.contacts) || '{}');
+    if (!db[peer]) db[peer] = { history: [] };
+    
     db[peer].history.push(m);
-    if(db[peer].history.length > 100) db[peer].history.shift(); // Pulizia 100 messaggi
-    localStorage.setItem(cfg.keys.contacts, JSON.stringify(db));
+    // Pulizia automatica: mantieni solo gli ultimi 100 messaggi
+    if (db[peer].history.length > CFG.maxHistory) {
+        db[peer].history.shift();
+    }
+    
+    localStorage.setItem(CFG.keys.contacts, JSON.stringify(db));
 }
 
 function loadHistory(peer) {
-    const c = document.getElementById('chat-messages'); c.innerHTML = '';
-    const db = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
-    if(db[peer]) db[peer].history.forEach(m => renderMsg(m, m.name === localName ? 'sent' : 'received'));
+    const chat = document.getElementById('chat-messages');
+    chat.innerHTML = '';
+    const db = JSON.parse(localStorage.getItem(CFG.keys.contacts) || '{}');
+    if (db[peer]) {
+        db[peer].history.forEach(m => renderMsg(m, m.name === localName ? 'sent' : 'received'));
+    }
 }
