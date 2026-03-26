@@ -1,4 +1,4 @@
-const CACHE_NAME = 'airchat-v3';
+const CACHE_NAME = 'airchat-v4';
 const ASSETS = [
   './', './index.html', './app.js', './manifest.json',
   './lz-string.min.js', './qrious.min.js', './jsQR.js', './icon-192.png', './icon-512.png'

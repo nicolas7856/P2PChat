@@ -1,33 +1,28 @@
-const cfg = { rtc: { iceServers: [] }, store: 'chat_v1_msg', user: 'chat_v1_user' };
+const cfg = { 
+    rtc: { iceServers: [] }, 
+    keys: { user: 'p2p_name', contacts: 'p2p_contacts' } 
+};
+
 let pc, dataChannel, localName = '', peerName = '', isHost = false, stream = null;
 
 // INIZIALIZZAZIONE
 window.addEventListener('DOMContentLoaded', () => {
-    // Registra Service Worker
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('service-worker.js').catch(console.error);
-    }
-    
-    const saved = localStorage.getItem(cfg.user);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
+    const saved = localStorage.getItem(cfg.keys.user);
     if (saved) {
         localName = saved;
-        showScreen('connect');
         document.getElementById('my-name-display').textContent = localName;
-        loadHistory();
+        showScreen('connect');
+        renderDashboard();
     }
+    setupEvents();
+});
 
-    // Event Listeners
+function setupEvents() {
     document.getElementById('login-button').onclick = () => {
-        const val = document.getElementById('username-input').value.trim();
-        if (val) {
-            localName = val;
-            localStorage.setItem(cfg.user, val);
-            showScreen('connect');
-            document.getElementById('my-name-display').textContent = localName;
-            loadHistory();
-        }
+        const n = document.getElementById('username-input').value.trim();
+        if(n) { localName = n; localStorage.setItem(cfg.keys.user, n); location.reload(); }
     };
-
     document.getElementById('start-hosting').onclick = startHost;
     document.getElementById('start-scanning').onclick = startScan;
     document.getElementById('stop-scanning').onclick = stopScan;
@@ -35,54 +30,70 @@ window.addEventListener('DOMContentLoaded', () => {
         document.getElementById('qr-container').classList.add('hidden');
         startScan();
     };
+    document.getElementById('attach-btn').onclick = () => document.getElementById('file-input').click();
+    document.getElementById('file-input').onchange = handleFile;
     document.getElementById('send-button').onclick = sendMsg;
-});
+    document.getElementById('message-input').onkeypress = e => { if(e.key === 'Enter') sendMsg(); };
+}
 
 function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById('screen-' + id).classList.add('active');
 }
 
-// WEBRTC LOGIC
+/**
+ * DASHBOARD E RUBRICA
+ */
+function renderDashboard() {
+    const list = document.getElementById('contacts-list');
+    const contacts = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
+    list.innerHTML = '';
+    Object.keys(contacts).forEach(name => {
+        const last = contacts[name].history.slice(-1)[0];
+        const card = document.createElement('div');
+        card.className = 'contact-card';
+        card.innerHTML = `
+            <div class="contact-info">
+                <strong>${name}</strong>
+                <small>${last ? (last.type === 'text' ? last.text : '📁 Media') : 'Nessun messaggio'}</small>
+            </div>
+            <span>➔</span>
+        `;
+        card.onclick = () => { peerName = name; startHost(); };
+        list.appendChild(card);
+    });
+}
+
+/**
+ * WEBRTC CORE
+ */
 function createPC() {
     if (pc) pc.close();
     pc = new RTCPeerConnection(cfg.rtc);
-
-    pc.onicecandidate = e => {
-        if (!e.candidate) {
-            genQR(JSON.stringify(pc.localDescription));
-        }
-    };
-
-    const onStateChange = () => {
-        const connected = pc.connectionState === 'connected' || pc.iceConnectionState === 'connected';
-        document.getElementById('connection-status').textContent = connected ? 'CONNESSO' : 'Disconnesso';
-        document.getElementById('connection-status').className = connected ? 'status-connected' : 'status-disconnected';
-        if (connected) {
+    pc.onicecandidate = e => { if (!e.candidate) genQR(JSON.stringify(pc.localDescription)); };
+    pc.onconnectionstatechange = () => {
+        if(pc.connectionState === 'connected') {
             document.getElementById('connection-loading').classList.add('hidden');
-            document.getElementById('chat-status-dot').className = 'dot-online';
-            setTimeout(() => showScreen('chat'), 500);
+            showScreen('chat');
+            loadHistory(peerName);
         }
     };
-
-    pc.onconnectionstatechange = onStateChange;
-    pc.oniceconnectionstatechange = onStateChange;
 }
 
 function setupChannel(ch) {
     dataChannel = ch;
-    ch.onopen = () => {
-        document.getElementById('chat-status-dot').className = 'dot-online';
-        ch.send(JSON.stringify({type:'name', name: localName}));
-    };
+    ch.onopen = () => ch.send(JSON.stringify({type:'name_sync', name: localName}));
     ch.onmessage = e => {
-        const data = JSON.parse(e.data);
-        if (data.type === 'name') {
-            peerName = data.name;
-            document.getElementById('peer-name-display').textContent = peerName;
-        } else if (data.type === 'text') {
-            renderMsg(data, 'received');
-            saveMsg(data);
+        const d = JSON.parse(e.data);
+        if(d.type === 'name_sync') { 
+            peerName = d.name; 
+            document.getElementById('peer-name-display').textContent = peerName; 
+        } else if(d.type === 'text' || d.type === 'media') {
+            renderMsg(d, 'received');
+            saveMsg(peerName, d);
+            ch.send(JSON.stringify({type: 'ack', id: d.id})); // Invia doppia spunta
+        } else if(d.type === 'ack') {
+            markAsReceived(d.id);
         }
     };
 }
@@ -92,82 +103,62 @@ async function startHost() {
     isHost = true;
     createPC();
     setupChannel(pc.createDataChannel("chat"));
-    document.getElementById('main-controls').classList.add('hidden');
+    document.getElementById('main-actions').classList.add('hidden');
     document.getElementById('qr-container').classList.remove('hidden');
-    document.getElementById('qr-instruction').textContent = "1. Fai scansionare questo QR all'amico";
-    document.getElementById('host-next-controls').classList.remove('hidden');
-    
+    document.getElementById('qr-instruction').textContent = "1. Fai scansionare all'amico";
+    document.getElementById('host-controls').classList.remove('hidden');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 }
 
 async function startScan() {
     document.getElementById('scanner-container').classList.remove('hidden');
-    const video = document.getElementById('scanner-video');
+    const v = document.getElementById('scanner-video');
     try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        video.srcObject = stream;
-        video.play();
+        v.srcObject = stream; v.play();
         requestAnimationFrame(tick);
-    } catch (err) {
-        alert("Errore accesso fotocamera");
-        stopScan();
-    }
+    } catch (e) { alert("Camera Error"); stopScan(); }
 }
 
 function stopScan() {
     document.getElementById('scanner-container').classList.add('hidden');
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    if(stream) stream.getTracks().forEach(t => t.stop());
 }
 
 function tick() {
-    const video = document.getElementById('scanner-video');
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    const v = document.getElementById('scanner-video');
+    if (v.readyState === v.HAVE_ENOUGH_DATA) {
         const canvas = document.getElementById('scanner-canvas');
-        canvas.height = video.videoHeight; canvas.width = video.videoWidth;
+        canvas.height = v.videoHeight; canvas.width = v.videoWidth;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const code = jsQR(ctx.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
-        if (code) {
-            stopScan();
-            handleQR(code.data);
-            return;
-        }
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        const code = jsQR(ctx.getImageData(0,0,canvas.width,canvas.height).data, canvas.width, canvas.height);
+        if (code) { stopScan(); handleQR(code.data); return; }
     }
-    if (document.getElementById('scanner-container').classList.contains('active') || stream) {
-        requestAnimationFrame(tick);
-    }
+    if(stream) requestAnimationFrame(tick);
 }
 
 async function handleQR(data) {
-    try {
-        const sdp = LZString.decompressFromEncodedURIComponent(data);
-        if (!sdp) return;
-        const obj = JSON.parse(sdp);
+    const sdp = LZString.decompressFromEncodedURIComponent(data);
+    if(!sdp) return;
+    const obj = JSON.parse(sdp);
+    document.getElementById('main-actions').classList.add('hidden');
+    document.getElementById('qr-container').classList.add('hidden');
+    document.getElementById('connection-loading').classList.remove('hidden');
 
-        // Mostra loader per evitare schermo bianco
-        document.getElementById('qr-container').classList.add('hidden');
-        document.getElementById('main-controls').classList.add('hidden');
-        document.getElementById('connection-loading').classList.remove('hidden');
-
-        if (obj.type === 'offer') {
-            createPC();
-            pc.ondatachannel = e => setupChannel(e.channel);
-            await pc.setRemoteDescription(new RTCSessionDescription(obj));
-            const ans = await pc.createAnswer();
-            await pc.setLocalDescription(ans);
-            // Client mostra il QR di risposta
-            document.getElementById('connection-loading').classList.add('hidden');
-            document.getElementById('qr-container').classList.remove('hidden');
-            document.getElementById('qr-instruction').textContent = "2. Ora fai scansionare la tua risposta all'host";
-            document.getElementById('host-next-controls').classList.add('hidden');
-        } else if (obj.type === 'answer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(obj));
-            // Host rimane in attesa sul loader
-        }
-    } catch (e) {
-        alert("QR non valido");
-        location.reload();
+    if(obj.type === 'offer') {
+        createPC();
+        pc.ondatachannel = e => setupChannel(e.channel);
+        await pc.setRemoteDescription(new RTCSessionDescription(obj));
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+        document.getElementById('connection-loading').classList.add('hidden');
+        document.getElementById('qr-container').classList.remove('hidden');
+        document.getElementById('qr-instruction').textContent = "2. Fai scansionare la risposta all'host";
+        document.getElementById('host-controls').classList.add('hidden');
+    } else if(obj.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(obj));
     }
 }
 
@@ -176,42 +167,70 @@ function genQR(sdp) {
     new QRious({ element: document.getElementById('qr-canvas'), value: comp, size: 250 });
 }
 
-// MESSAGGI
+/**
+ * MESSAGGI E MEDIA
+ */
 function sendMsg() {
-    const input = document.getElementById('message-input');
-    const text = input.value.trim();
-    if (!text || !dataChannel || dataChannel.readyState !== 'open') return;
-
-    const msg = {
-        type: 'text',
-        name: localName,
-        text: text,
-        ts: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+    const i = document.getElementById('message-input');
+    if(!i.value.trim() || !dataChannel) return;
+    const m = {
+        id: Math.random().toString(36).substr(2, 9),
+        type: 'text', name: localName, text: i.value,
+        ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
     };
-    dataChannel.send(JSON.stringify(msg));
-    renderMsg(msg, 'sent');
-    saveMsg(msg);
-    input.value = '';
+    dataChannel.send(JSON.stringify(m));
+    renderMsg(m, 'sent'); saveMsg(peerName, m); i.value = '';
+}
+
+function handleFile(e) {
+    const file = e.target.files[0];
+    if(!file || !dataChannel) return;
+    if(file.size > 2 * 1024 * 1024) return alert("File troppo grande (Max 2MB)");
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        const m = {
+            id: Math.random().toString(36).substr(2, 9),
+            type: 'media', mediaType: file.type.split('/')[0],
+            name: localName, data: ev.target.result,
+            ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+        };
+        dataChannel.send(JSON.stringify(m));
+        renderMsg(m, 'sent'); saveMsg(peerName, m);
+    };
+    reader.readAsDataURL(file);
 }
 
 function renderMsg(m, type) {
-    const chat = document.getElementById('chat-messages');
-    const div = document.createElement('div');
-    div.className = `message ${type}`;
-    div.innerHTML = `${type === 'received' ? '<b>' + m.name + '</b><br>' : ''}${m.text}<span class="msg-meta">${m.ts}</span>`;
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    const c = document.getElementById('chat-messages');
+    const d = document.createElement('div');
+    d.id = `msg-${m.id}`;
+    d.className = `message ${type}`;
+    let html = type === 'received' ? `<strong>${m.name}</strong><br>` : '';
+    if(m.type === 'text') html += m.text;
+    else if(m.mediaType === 'image') html += `<img src="${m.data}" class="msg-media">`;
+    else html += `<video src="${m.data}" controls class="msg-media"></video>`;
+    
+    html += `<span class="msg-meta">${m.ts} <span class="ticks">${type === 'sent' ? '✓' : ''}</span></span>`;
+    d.innerHTML = html;
+    c.appendChild(d); c.scrollTop = c.scrollHeight;
 }
 
-function saveMsg(m) {
-    let h = JSON.parse(localStorage.getItem(cfg.store) || '[]');
-    h.push(m);
-    localStorage.setItem(cfg.store, JSON.stringify(h.slice(-100)));
+function markAsReceived(id) {
+    const el = document.getElementById(`msg-${id}`);
+    if(el) { const t = el.querySelector('.ticks'); t.textContent = '✓✓'; t.classList.add('ack'); }
 }
 
-function loadHistory() {
-    const chat = document.getElementById('chat-messages');
-    chat.innerHTML = '';
-    let h = JSON.parse(localStorage.getItem(cfg.store) || '[]');
-    h.forEach(m => renderMsg(m, m.name === localName ? 'sent' : 'received'));
+function saveMsg(peer, m) {
+    let db = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
+    if(!db[peer]) db[peer] = { history: [] };
+    db[peer].history.push(m);
+    if(db[peer].history.length > 100) db[peer].history.shift(); // Pulizia 100 messaggi
+    localStorage.setItem(cfg.keys.contacts, JSON.stringify(db));
+}
+
+function loadHistory(peer) {
+    const c = document.getElementById('chat-messages'); c.innerHTML = '';
+    const db = JSON.parse(localStorage.getItem(cfg.keys.contacts) || '{}');
+    if(db[peer]) db[peer].history.forEach(m => renderMsg(m, m.name === localName ? 'sent' : 'received'));
 }
